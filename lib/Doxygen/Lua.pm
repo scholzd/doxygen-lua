@@ -46,7 +46,7 @@ sub new {
 
 sub _init {
     my $self = shift;
-    $self->{mark} = '--!';
+    $self->{mark} = '--- ';
 }
 
 =head2 parse
@@ -61,6 +61,7 @@ sub parse {
 
     my $in_block = 0;
     my $in_function = 0;
+	my $in_ml_variable = 0;
     my $block_name = q{};
     my $result = q{};
 
@@ -68,18 +69,22 @@ sub parse {
      
     open FH, "<$input"
         or die "Can't open $input for reading: $!";
-     
+	open(my $log, '>', 'report.txt')
+		or die "failed to open dat file: $!";
+
     foreach my $line (<FH>) {
         chomp $line;
 
+		print $log "$line		";
+
         # include empty lines
         if ($line =~ m{^\s*$}) {
-            $result .= "\n"
+            $result .= "\n";
         }
         # skip normal comments
-        next if $line =~ /^\s*--[^!]/;
+        next if $line =~ /^\s*--\s[^!]/;
         # remove end of line comments
-        $line =~ s/--[^!].*//;
+        $line =~ s/\s--\s[^!].*//;
         # skip comparison
         next if $line =~ /==/;
         # translate to doxygen mark
@@ -87,44 +92,83 @@ sub parse {
 
         if ($line =~ m{^\s*///}) {
             $result .= "$line\n";
+			print $log "---> mark\n";
         }
         # function start
-        elsif ($line =~ /^function/) {
+        elsif ($line =~ /^function/ && $in_ml_variable == 0) {
             $in_function = 1;
             $line .= q{;};
             $line =~ s/:/-/;
             $result .= "$line\n";
+			print $log "---> func start\n";
         }
-	#local function start
-   	elsif ($line =~ /^local.+function/) {
+		#local function start
+   		elsif ($line =~ /^local.+function/ && $in_ml_variable == 0) {
             $in_function = 1;
             $line .= q{;};
             $line =~ s/function\s+/function-/;
             $result .= "$line\n";
+			print $log "---> local func start\n";
         }
         # function end
-        elsif ($in_function == 1 && $line =~ /^end/) {
+        elsif ($in_function == 1 && $line =~ /^end/ && $in_ml_variable == 0) {
             $in_function = 0;
+			print $log "---> func end\n";
         }
         # block start
-        elsif ($in_function == 0 && $line =~ /^(\S+)\s*=\s*{/ && $line !~ /}/) {
+        elsif ($in_function == 0 && $line =~ /^(\S+)\s*=\s*{/ && $line !~ /}/ && $in_ml_variable == 0) {
             $block_name = $1; 
             $in_block = 1;
+			print $log "---> block start\n";
         }
         # block end
-        elsif ($in_function == 0 && $line =~ /^\s*}/ && $in_block == 1) {
+        elsif ($in_function == 0 && $line =~ /^\s*}/ && $in_block == 1 && $in_ml_variable == 0) {
             $block_name = q{};
             $in_block = 0;
+			print $log "---> block end\n";
         }
         # variables
-        elsif ($in_function == 0 && $line =~ /=/) {
-            $line =~ s/(?=\S)/$block_name./ if $block_name;
-            $line =~ s{,?(\s*)(?=///|$)}{;$1};
-            $result .= "$line\n";
+        elsif ($in_function == 0 && $in_ml_variable == 0 && $line =~ /=/) {
+			# check if we have a table definition that spans multiple lines
+			if ($line =~ /{/ && $line !~ /}/) {
+				print $log "---> MULTILINE VAR\n";
+				$in_ml_variable = 1;
+            	$line =~ s/(?=\S)/$block_name./ if $block_name;
+            	$line =~ s{,?(\s*)(?=///|$)}{$1};
+            	$result .= "$line\n";
+				# here simply don't append the semicolon
+			}
+			# proceed normally otherwise
+			else {
+            	$line =~ s/(?=\S)/$block_name./ if $block_name;
+           	 	$line =~ s{,?(\s*)(?=///|$)}{;$1};
+            	$result .= "$line\n";
+				print $log "---> variable: $line\n";
+			}
         }
+		# multiline variables (table)
+		elsif ($in_ml_variable == 1) {
+			print $log "---> handling multilinevar \n";
+			# if we have a closing bracket AND no new opening ones -> var def done
+			# TODO: count remaining open brackets in case of more nasty nesting and only close when all brackets are closed
+			if ($line =~ /}/ && $line !~ /{/) {
+				print $log "end of multilinevar\n";
+				$in_ml_variable = 0;
+				$result .= "$line;\n";
+			}
+			else {
+				# anything -> consider it part of the definition and append -> no semicolon
+				$result .= "$line\n";
+			}
+		}
+		else {
+			print $log "---> none of the above\n";
+		}
     }
+	print $log "The final result\n\n$result";
 
     close FH;
+	close $log;
     return $result;
 }
 
